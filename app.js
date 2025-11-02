@@ -1,8 +1,11 @@
-/* ESP.EE v4.4 - simplified app.js */
+/* ESP.EE v4.4.1 — sessão visível + exportações + restauração de backups */
+
+/* ===== Constantes MS Graph/MSAL ===== */
 const SITE_ID = 'esparedes-my.sharepoint.com,540a0485-2578-481e-b4d8-220b41fb5c43,7335dc42-69c8-42d6-8282-151e3783162d';
 const CFG_PATH = '/Documents/GestaoAlunos-OneDrive/config_especial.json';
 const REG_PATH = '/Documents/GestaoAlunos-OneDrive/2registos_alunos.json';
 const BACKUP_FOLDER = '/Documents/GestaoAlunos-OneDrive/backup';
+
 const MSAL_CONFIG = {
   auth: {
     clientId: "c5573063-8a04-40d3-92bf-eb229ad4701c",
@@ -14,48 +17,416 @@ const MSAL_CONFIG = {
     storeAuthStateInCookie: false
   }
 };
-const MSAL_SCOPES = {
-  scopes: ["Files.ReadWrite.All", "User.Read", "openid", "profile", "offline_access"]
-};
-let msalApp, account, accessToken; const state = { config:null, reg:{versao:'v1',registos:[]} };
+const MSAL_SCOPES = { scopes: ["Files.ReadWrite.All", "User.Read", "openid", "profile", "offline_access"] };
+
+/* ===== Estado e utilitários ===== */
+let msalApp, account, accessToken;
+const state = { config: null, reg: { versao: 'v1', registos: [] } };
 const $ = s => document.querySelector(s);
 
-function updateSync(txt){ const el = $('#syncIndicator'); if(el) el.textContent = txt; }
-function toast(t){ Swal.fire({toast:true,position:'top-end',showConfirmButton:false,timer:1400,title:t}); }
+function updateSync(txt) { const el = $('#syncIndicator'); if (el) el.textContent = txt; }
+function toast(t) { Swal?.fire?.({ toast:true, position:'top-end', showConfirmButton:false, timer:1500, title:t }); }
 
-async function initMsal(){ if(typeof msal === 'undefined') { console.error('MSAL missing'); return; } msalApp = new msal.PublicClientApplication(MSAL_CONFIG); try{ const resp = await msalApp.handleRedirectPromise(); if(resp && resp.account){ account = resp.account; msalApp.setActiveAccount(account); await acquireToken(); onLogin(); return; } const accs = msalApp.getAllAccounts(); if(accs.length){ account = accs[0]; msalApp.setActiveAccount(account); await acquireToken(); onLogin(); } }catch(e){ console.warn('msal init',e); } }
+/* [v4.4.1] Mostrar sessão (nome/email) */
+function setSessionName() {
+  const el = $('#sessNome');
+  if (!el) return;
+  if (account) {
+    el.textContent = `Sessão: ${account.name || account.username || 'Utilizador'}`;
+  } else {
+    el.textContent = 'Sessão: não iniciada';
+  }
+}
 
-async function acquireToken(){ if(!msalApp) return; try{ const r = await msalApp.acquireTokenSilent(MSAL_SCOPES); accessToken = r.accessToken; return accessToken; }catch(e){ try{ await msalApp.acquireTokenRedirect(MSAL_SCOPES); }catch(err){ console.error(err); } } }
+/* ===== MSAL: init e token ===== */
+async function initMsal() {
+  if (typeof msal === 'undefined') { console.error('MSAL missing'); return; }
+  msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
+  try {
+    const resp = await msalApp.handleRedirectPromise();
+    if (resp && resp.account) {
+      account = resp.account; msalApp.setActiveAccount(account);
+      await acquireToken(); onLogin(); return;
+    }
+    const accs = msalApp.getAllAccounts();
+    if (accs.length) {
+      account = accs[0]; msalApp.setActiveAccount(account);
+      await acquireToken(); onLogin(); return;
+    }
+    setSessionName();
+  } catch (e) {
+    console.warn('msal init', e);
+    setSessionName();
+  }
+}
+async function acquireToken() {
+  if (!msalApp) return;
+  try {
+    const r = await msalApp.acquireTokenSilent(MSAL_SCOPES);
+    accessToken = r.accessToken; return accessToken;
+  } catch (e) {
+    try { await msalApp.acquireTokenRedirect(MSAL_SCOPES); }
+    catch (err) { console.error(err); }
+  }
+}
+function ensureLogin() {
+  if (msalApp) msalApp.loginRedirect(MSAL_SCOPES);
+  else Swal.fire('Erro','Autenticação não disponível','error');
+}
+function ensureLogout() {
+  if (msalApp) msalApp.logoutRedirect();
+  else { account = null; setSessionName(); }
+}
 
-function ensureLogin(){ if(msalApp) msalApp.loginRedirect(MSAL_SCOPES); else Swal.fire('Erro','Autenticação não disponível','error'); }
-function ensureLogout(){ if(msalApp) msalApp.logoutRedirect(); else { document.getElementById('sessNome').textContent='Sessão terminada'; } }
+/* ===== Microsoft Graph helpers ===== */
+async function graphLoad(path) {
+  if (!accessToken) await acquireToken();
+  try {
+    const url = `https://graph.microsoft.com/v1.0/sites/${SITE_ID}/drive/root:${path}:/content`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (r.ok) { const txt = await r.text(); return JSON.parse(txt); }
+    if (r.status === 404) return null;
+    throw new Error('Graph error ' + r.status);
+  } catch (e) { console.warn('graphLoad', e); return null; }
+}
+async function graphSave(path, obj) {
+  if (!accessToken) await acquireToken();
+  try {
+    const url = `https://graph.microsoft.com/v1.0/sites/${SITE_ID}/drive/root:${path}:/content`;
+    const r = await fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(obj, null, 2)
+    });
+    if (!r.ok) throw new Error('save failed ' + r.status);
+    return await r.json();
+  } catch (e) { console.warn('graphSave', e); throw e; }
+}
+/* [v4.4.1] Listagem de ficheiros numa pasta (para backups) */
+async function graphList(folderPath) {
+  if (!accessToken) await acquireToken();
+  const url = `https://graph.microsoft.com/v1.0/sites/${SITE_ID}/drive/root:${folderPath}:/children`;
+  try {
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!r.ok) throw new Error('list failed ' + r.status);
+    const data = await r.json();
+    return Array.isArray(data.value) ? data.value : [];
+  } catch (e) { console.warn('graphList', e); return []; }
+}
 
-async function graphLoad(path){ if(!accessToken) await acquireToken(); try{ const url = `https://graph.microsoft.com/v1.0/sites/${SITE_ID}/drive/root:${path}:/content`; const r = await fetch(url,{headers:{Authorization:`Bearer ${accessToken}`}}); if(r.ok){ const txt = await r.text(); return JSON.parse(txt); } if(r.status===404) return null; throw new Error('Graph error '+r.status); }catch(e){ console.warn('graphLoad',e); return null; } }
+/* ===== Carregamento inicial ===== */
+async function loadConfigAndReg() {
+  updateSync('🔁 sincronizando...');
+  const cfg = await graphLoad(CFG_PATH);
+  const reg = await graphLoad(REG_PATH);
 
-async function graphSave(path,obj){ if(!accessToken) await acquireToken(); try{ const url = `https://graph.microsoft.com/v1.0/sites/${SITE_ID}/drive/root:${path}:/content`; const r = await fetch(url,{method:'PUT',headers:{Authorization:`Bearer ${accessToken}`},body:JSON.stringify(obj,null,2)}); if(!r.ok) throw new Error('save failed '+r.status); return await r.json(); }catch(e){ console.warn('graphSave',e); throw e; } }
+  if (cfg) state.config = cfg;
+  else state.config = JSON.parse(localStorage.getItem('esp_config') || '{}') || { professores:[], alunos:[], disciplinas:[], grupos:[], calendario:{} };
 
-async function loadConfigAndReg(){ updateSync('🔁 sincronizando...'); const cfg = await graphLoad(CFG_PATH); const reg = await graphLoad(REG_PATH); if(cfg) state.config = cfg; else state.config = JSON.parse(localStorage.getItem('esp_config')||'{}')||{professores:[],alunos:[],disciplinas:[],grupos:[],calendario:{}}; if(reg) state.reg = reg; else state.reg = JSON.parse(localStorage.getItem('esp_reg')||'{}')||{versao:'v1',registos:[]}; localStorage.setItem('esp_config',JSON.stringify(state.config)); localStorage.setItem('esp_reg',JSON.stringify(state.reg)); updateSync('💾 guardado'); renderDay(); renderRegList(); }
+  if (reg) state.reg = reg;
+  else state.reg = JSON.parse(localStorage.getItem('esp_reg') || '{}') || { versao:'v1', registos:[] };
 
-function renderDay(){ const date = $('#dataHoje').value || new Date().toISOString().slice(0,10); $('#dataHoje').value = date; const out = $('#sessoesHoje'); out.innerHTML=''; if(!state.config || !state.config.professores){ out.innerHTML='<div class="small">⚠️ Config não carregada.</div>'; return; } const userEmail = account?.username?.toLowerCase()||''; const prof = (state.config.professores||[]).find(p=>p.email && p.email.toLowerCase()===userEmail); if(!prof){ out.innerHTML='<div class="small">Professor não reconhecido.</div>'; return; } const grupos = (state.config.grupos||state.config.horarios||[]).filter(g=> g.professorId===prof.id); if(!grupos.length){ out.innerHTML='<div class="small">Sem sessões definidas.</div>'; return; } grupos.forEach(g=>{ const disc = (state.config.disciplinas||[]).find(d=>d.id===g.disciplinaId) || {nome:g.disciplinaId}; const card = document.createElement('div'); card.className='card session'; card.innerHTML = `<div><strong>${disc.nome}</strong> | Sala: ${g.sala||'-'} (${g.horaInicio||g.inicio||'08:15'} - ${g.horaFim||g.fim||'09:05'})</div><div style="margin-top:8px;display:flex;gap:6px;align-items:center"><input class="input lessonNumber" placeholder="Nº Lição" style="width:90px"><input class="input sumario" placeholder="Sumário" style="flex:1"><button class="btn presencaP">Presente</button><button class="btn ghost presencaF" style="background:#d33a2c">Falta</button><button class="btn ghost duplicate">Duplicar</button></div>`; out.appendChild(card); card.querySelector('.presencaP').addEventListener('click', ()=> quickSaveAttendance(g,card,true)); card.querySelector('.presencaF').addEventListener('click', ()=> quickSaveAttendance(g,card,false)); card.querySelector('.duplicate').addEventListener('click', ()=> duplicatePrevious(g,card)); }); }
+  localStorage.setItem('esp_config', JSON.stringify(state.config));
+  localStorage.setItem('esp_reg', JSON.stringify(state.reg));
+  updateSync('💾 guardado');
+  renderDay(); renderRegList();
+  setSessionName(); // v4.4.1
+}
 
-function makeRegId(){ return 'R'+Date.now(); }
+/* ===== UI: Painel do Dia ===== */
+function renderDay() {
+  const date = $('#dataHoje').value || new Date().toISOString().slice(0,10);
+  $('#dataHoje').value = date;
+  const out = $('#sessoesHoje');
+  out.innerHTML = '';
 
-async function quickSaveAttendance(group,card,present=true){ if(!state.reg) state.reg={versao:'v1',registos:[]}; const lesson = card.querySelector('.lessonNumber')?.value.trim()||''; const sumario = card.querySelector('.sumario')?.value.trim()||''; if(!lesson){ const res = await Swal.fire({title:'Nº Lição vazio',text:'Deseja gravar sem nº de lição?',showCancelButton:true}); if(!res.isConfirmed) return; } const date = $('#dataHoje').value || new Date().toISOString().slice(0,10); const reg = { id: makeRegId(), data: date, professorId: group.professorId, disciplinaId: group.disciplinaId, numeroLicao: lesson, sumario: sumario, presenca: present, horaInicio: group.horaInicio||group.inicio||null, horaFim: group.horaFim||group.fim||null, criadoEm: new Date().toISOString() }; state.reg.registos.push(reg); try{ updateSync('🔁 sincronizando...'); await graphSave(REG_PATH, state.reg); localStorage.setItem('esp_reg', JSON.stringify(state.reg)); updateSync('💾 guardado'); toast('Registo gravado'); renderRegList(); }catch(e){ console.warn('save failed',e); localStorage.setItem('esp_reg', JSON.stringify(state.reg)); updateSync('⚠ offline'); Swal.fire('Aviso','Guardado localmente. Será sincronizado quando online.','warning'); renderRegList(); } }
+  if (!state.config || !state.config.professores) {
+    out.innerHTML = '<div class="small">⚠️ Config não carregada.</div>'; return;
+  }
+  const userEmail = (account?.username || '').toLowerCase();
+  const prof = (state.config.professores || []).find(p => (p.email||'').toLowerCase() === userEmail);
+  if (!prof) { out.innerHTML = '<div class="small">Professor não reconhecido.</div>'; return; }
 
-function duplicatePrevious(group,card){ const prev = (state.reg.registos||[]).filter(r=> r.professorId===group.professorId).slice(-1)[0]; if(!prev){ Swal.fire('Duplicar','Nenhum registo anterior encontrado.','info'); return; } card.querySelector('.lessonNumber').value = prev.numeroLicao || ''; card.querySelector('.sumario').value = prev.sumario || ''; toast('Campos preenchidos com o último registo'); }
+  const grupos = (state.config.grupos || state.config.horarios || []).filter(g => g.professorId === prof.id);
+  if (!grupos.length) { out.innerHTML = '<div class="small">Sem sessões definidas.</div>'; return; }
 
-function renderRegList(){ const el = $('#regList'); if(!el) return; el.innerHTML = ''; (state.reg.registos||[]).slice().reverse().forEach(r=> el.innerHTML += `<div style="padding:6px;border-bottom:1px solid #eee">${r.data} • ${r.numeroLicao||'-'} • ${r.sumario||'-'}</div>`); }
+  grupos.forEach(g => {
+    const disc = (state.config.disciplinas || []).find(d => d.id === g.disciplinaId) || { nome: g.disciplinaId };
+    const card = document.createElement('div');
+    card.className = 'card session';
+    card.innerHTML = `
+      <div><strong>${disc.nome}</strong> · Sala: ${g.sala || '-'} (${g.horaInicio || g.inicio || '08:15'} - ${g.horaFim || g.fim || '09:05'})</div>
+      <div style="margin-top:8px;display:flex;gap:6px;align-items:center">
+        <input class="input lessonNumber" placeholder="Nº Lição" style="width:90px">
+        <input class="input sumario" placeholder="Sumário" style="flex:1">
+        <button class="btn presencaP">Presente</button>
+        <button class="btn ghost presencaF" style="background:#d33a2c">Falta</button>
+        <button class="btn ghost duplicate">Duplicar</button>
+      </div>`;
+    out.appendChild(card);
+    card.querySelector('.presencaP').addEventListener('click', () => quickSaveAttendance(g, card, true));
+    card.querySelector('.presencaF').addEventListener('click', () => quickSaveAttendance(g, card, false));
+    card.querySelector('.duplicate').addEventListener('click', () => duplicatePrevious(g, card));
+  });
+}
+function makeRegId() { return 'R' + Date.now(); }
+async function quickSaveAttendance(group, card, present = true) {
+  if (!state.reg) state.reg = { versao:'v1', registos:[] };
+  const lesson = card.querySelector('.lessonNumber')?.value.trim() || '';
+  const sumario = card.querySelector('.sumario')?.value.trim() || '';
+  if (!lesson) {
+    const res = await Swal.fire({ title:'Nº Lição vazio', text:'Deseja gravar sem nº de lição?', showCancelButton:true });
+    if (!res.isConfirmed) return;
+  }
+  const date = $('#dataHoje').value || new Date().toISOString().slice(0,10);
+  const reg = {
+    id: makeRegId(),
+    data: date,
+    professorId: group.professorId,
+    disciplinaId: group.disciplinaId,
+    numeroLicao: lesson,
+    sumario: sumario,
+    presenca: present,
+    horaInicio: group.horaInicio || group.inicio || null,
+    horaFim: group.horaFim || group.fim || null,
+    criadoEm: new Date().toISOString()
+  };
+  state.reg.registos.push(reg);
+  try {
+    updateSync('🔁 sincronizando...');
+    await graphSave(REG_PATH, state.reg);
+    localStorage.setItem('esp_reg', JSON.stringify(state.reg));
+    updateSync('💾 guardado'); toast('Registo gravado');
+    renderRegList();
+  } catch (e) {
+    console.warn('save failed', e);
+    localStorage.setItem('esp_reg', JSON.stringify(state.reg));
+    updateSync('⚠ offline');
+    Swal.fire('Aviso','Guardado localmente. Será sincronizado quando online.','warning');
+    renderRegList();
+  }
+}
+function duplicatePrevious(group, card) {
+  const prev = (state.reg.registos || []).filter(r => r.professorId === group.professorId).slice(-1)[0];
+  if (!prev) { Swal.fire('Duplicar','Nenhum registo anterior encontrado.','info'); return; }
+  card.querySelector('.lessonNumber').value = prev.numeroLicao || '';
+  card.querySelector('.sumario').value = prev.sumario || '';
+  toast('Campos preenchidos com o último registo');
+}
 
-function showAdminTab(tab){ const c = document.getElementById('adminContent'); if(!c) return; if(tab==='professores'){ const rows = (state.config.professores||[]).map(p=>`<div style="padding:8px;border-bottom:1px solid #eee"><strong>${p.id} — ${p.nome}</strong><div class="small">${p.email||''}</div></div>`).join(''); c.innerHTML = rows || '<div class="small">Sem professores</div>'; } if(tab==='alunos'){ const rows = (state.config.alunos||[]).map(a=>`<div style="padding:8px;border-bottom:1px solid #eee">${a.id} — ${a.nome}</div>`).join(''); c.innerHTML = rows || '<div class="small">Sem alunos</div>'; } if(tab==='disciplinas'){ const rows = (state.config.disciplinas||[]).map(d=>`<div style="padding:8px;border-bottom:1px solid #eee">${d.id} — ${d.nome}</div>`).join(''); c.innerHTML = rows || '<div class="small">Sem disciplinas</div>'; } if(tab==='grupos'){ const rows = (state.config.grupos||state.config.horarios||[]).map(g=>`<div style="padding:8px;border-bottom:1px solid #eee">${g.id} • ${g.professorId} • ${g.disciplinaId} • ${g.horaInicio||g.inicio}-${g.horaFim||g.fim}</div>`).join(''); c.innerHTML = rows || '<div class="small">Sem grupos</div>'; } if(tab==='calendario'){ c.innerHTML = '<pre style="white-space:pre-wrap">'+JSON.stringify(state.config.calendario||{},null,2)+'</pre>'; } }
+/* ===== UI: Registos ===== */
+function renderRegList() {
+  const el = $('#regList'); if (!el) return;
+  el.innerHTML = '';
+  (state.reg.registos || []).slice().reverse().forEach(r => {
+    el.innerHTML += `<div style="padding:6px;border-bottom:1px solid #eee">${r.data} • ${r.numeroLicao || '-'} • ${r.sumario || '-'}</div>`;
+  });
+}
 
-document.getElementById('fileImport')?.addEventListener('change', async (ev)=>{ const files = ev.target.files; if(!files||!files.length) return; for(const f of files){ const name = f.name.toLowerCase(); if(name.endsWith('.json')){ const txt = await f.text(); try{ state.config = JSON.parse(txt); autoSaveConfig(); Swal.fire('Importado','JSON importado e guardado','success'); }catch(e){ Swal.fire('Erro','JSON inválido','error'); } } else { const data = await f.arrayBuffer(); const wb = XLSX.read(data); const sheet = wb.SheetNames[0]; const json = XLSX.utils.sheet_to_json(wb.Sheets[sheet]); const map = json.map(r=>({ id: r.id||r.ID||r.Codigo||r.codigo, nome: r.nome||r.Nome||r.NOME, email: r.email||r.Email||r.EMAIL })); state.config.professores = map; autoSaveConfig(); Swal.fire('Importado','XLSX importado (professores)','success'); } } });
+/* ===== Administração (tabs) ===== */
+function showAdminTab(tab) {
+  const c = document.getElementById('adminContent'); if (!c) return;
+  if (tab === 'professores') {
+    const rows = (state.config.professores || []).map(p =>
+      `<div style="padding:8px;border-bottom:1px solid #eee"><strong>${p.id} — ${p.nome}</strong><div class="small">${p.email || ''}</div></div>`).join('');
+    c.innerHTML = rows || '<div class="small">Sem professores</div>';
+  }
+  if (tab === 'alunos') {
+    const rows = (state.config.alunos || []).map(a =>
+      `<div style="padding:8px;border-bottom:1px solid #eee">${a.id} — ${a.nome}</div>`).join('');
+    c.innerHTML = rows || '<div class="small">Sem alunos</div>';
+  }
+  if (tab === 'disciplinas') {
+    const rows = (state.config.disciplinas || []).map(d =>
+      `<div style="padding:8px;border-bottom:1px solid #eee">${d.id} — ${d.nome}</div>`).join('');
+    c.innerHTML = rows || '<div class="small">Sem disciplinas</div>';
+  }
+  if (tab === 'grupos') {
+    const rows = (state.config.grupos || state.config.horarios || []).map(g =>
+      `<div style="padding:8px;border-bottom:1px solid #eee">${g.id} • ${g.professorId} • ${g.disciplinaId} • ${g.horaInicio||g.inicio}-${g.horaFim||g.fim}</div>`).join('');
+    c.innerHTML = rows || '<div class="small">Sem grupos</div>';
+  }
+  if (tab === 'calendario') {
+    c.innerHTML = '<pre style="white-space:pre-wrap">'+JSON.stringify(state.config.calendario||{}, null, 2)+'</pre>';
+  }
+}
 
-let autosaveTimer = null; function autoSaveConfig(){ if(autosaveTimer) clearTimeout(autosaveTimer); autosaveTimer = setTimeout(async ()=>{ try{ await graphSave(CFG_PATH, state.config); localStorage.setItem('esp_config', JSON.stringify(state.config)); updateSync('💾 guardado'); }catch(e){ console.warn('auto-save failed',e); updateSync('⚠ offline'); localStorage.setItem('esp_config', JSON.stringify(state.config)); } },800); }
+/* ===== Import JSON/XLSX existente ===== */
+document.getElementById('fileImport')?.addEventListener('change', async (ev) => {
+  const files = ev.target.files; if (!files || !files.length) return;
+  for (const f of files) {
+    const name = f.name.toLowerCase();
+    if (name.endsWith('.json')) {
+      const txt = await f.text();
+      try {
+        state.config = JSON.parse(txt);
+        autoSaveConfig();
+        Swal.fire('Importado','JSON importado e guardado','success');
+      } catch (e) { Swal.fire('Erro','JSON inválido','error'); }
+    } else {
+      const data = await f.arrayBuffer();
+      const wb = XLSX.read(data);
+      const sheet = wb.SheetNames[0];
+      const json = XLSX.utils.sheet_to_json(wb.Sheets[sheet]);
+      const map = json.map(r => ({
+        id: r.id || r.ID || r.Codigo || r.codigo,
+        nome: r.nome || r.Nome || r.NOME,
+        email: r.email || r.Email || r.EMAIL
+      }));
+      state.config.professores = map; autoSaveConfig();
+      Swal.fire('Importado','XLSX importado (professores)','success');
+    }
+  }
+});
 
-async function createBackupIfExists(){ try{ const current = state.config || JSON.parse(localStorage.getItem('esp_config')||'{}'); if(!current) return null; const now = new Date(); const ts = now.getFullYear().toString().padStart(4,'0')+(now.getMonth()+1).toString().padStart(2,'0')+now.getDate().toString().padStart(2,'0')+'_'+now.getHours().toString().padStart(2,'0')+now.getMinutes().toString().padStart(2,'0'); const backupPath = BACKUP_FOLDER+'/config_especial_'+ts+'.json'; await graphSave(backupPath, current); toast('Backup criado'); return backupPath; }catch(e){ console.warn(e); return null; } }
+/* ===== Auto-save config + Backup semanal ===== */
+let autosaveTimer = null;
+function autoSaveConfig() {
+  if (autosaveTimer) clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(async () => {
+    try {
+      await graphSave(CFG_PATH, state.config);
+      localStorage.setItem('esp_config', JSON.stringify(state.config));
+      updateSync('💾 guardado');
+    } catch (e) {
+      console.warn('auto-save failed', e);
+      updateSync('⚠ offline');
+      localStorage.setItem('esp_config', JSON.stringify(state.config));
+    }
+  }, 800);
+}
+async function createBackupIfExists() {
+  try {
+    const current = state.config || JSON.parse(localStorage.getItem('esp_config') || '{}');
+    if (!current) return null;
+    const now = new Date();
+    const ts = now.getFullYear().toString().padStart(4,'0')
+      +(now.getMonth()+1).toString().padStart(2,'0')
+      +now.getDate().toString().padStart(2,'0')
+      +'_'+now.getHours().toString().padStart(2,'0')
+      +now.getMinutes().toString().padStart(2,'0');
+    const backupPath = BACKUP_FOLDER+'/config_especial_'+ts+'.json';
+    await graphSave(backupPath, current);
+    toast('Backup criado');
+    return backupPath;
+  } catch (e) { console.warn(e); return null; }
+}
+setInterval(() => { try { createBackupIfExists(); } catch(e){} }, 1000*60*60*24*7); // semanal
 
-setInterval(()=>{ try{ createBackupIfExists(); }catch(e){} }, 1000*60*60*24*7);
+/* ===== v4.4.1: Exportações e restauro ===== */
+function downloadBlob(filename, blob) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1200);
+}
+function exportJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data || {}, null, 2)], { type: 'application/json' });
+  downloadBlob(filename, blob);
+}
+function exportConfigXlsx() {
+  if (typeof XLSX === 'undefined') { Swal.fire('Erro','XLSX não disponível','error'); return; }
+  const cfg = state.config || {professores:[],alunos:[],disciplinas:[],grupos:[],calendario:{}};
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cfg.professores||[]), 'Professores');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cfg.alunos||[]), 'Alunos');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cfg.disciplinas||[]), 'Disciplinas');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cfg.grupos||cfg.horarios||[]), 'Grupos');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([cfg.calendario||{}]), 'Calendario');
+  const bin = XLSX.write(wb, { bookType:'xlsx', type:'array' });
+  downloadBlob(`config_${new Date().toISOString().slice(0,10)}.xlsx`,
+    new Blob([bin], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+}
+function exportRegXlsx() {
+  if (typeof XLSX === 'undefined') { Swal.fire('Erro','XLSX não disponível','error'); return; }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((state.reg?.registos)||[]), 'Registos');
+  const bin = XLSX.write(wb, { bookType:'xlsx', type:'array' });
+  downloadBlob(`registos_${new Date().toISOString().slice(0,10)}.xlsx`,
+    new Blob([bin], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+}
+async function restoreBackup() {
+  try {
+    updateSync('🔁 a ler backups...');
+    const items = await graphList(BACKUP_FOLDER);
+    const onlyCfg = items
+      .filter(it => it?.name?.startsWith('config_especial_') && it?.name?.endsWith('.json'))
+      .sort((a,b) => (a.name < b.name ? 1 : -1)); // recentes primeiro
+    if (!onlyCfg.length) { Swal.fire('Restauração','Sem backups disponíveis.','info'); updateSync('—'); return; }
 
-window.openAdminModal = function(){ document.querySelectorAll('.section').forEach(s=>s.classList.remove('active')); document.getElementById('admin').classList.add('active'); document.querySelectorAll('.navbtn').forEach(n=>n.classList.remove('active')); document.querySelector('[data-section="admin"]').classList.add('active'); showAdminTab('professores'); };
+    const options = {}; onlyCfg.forEach(f => options[f.name] = f.name);
+    const { value: pick } = await Swal.fire({
+      title: 'Restaurar backup',
+      input: 'select', inputOptions: options,
+      inputPlaceholder: 'Escolhe o ficheiro de backup',
+      showCancelButton: true
+    });
+    if (!pick) { updateSync('—'); return; }
 
-document.addEventListener('DOMContentLoaded', async ()=>{ document.getElementById('btnMsLogin')?.addEventListener('click', ()=> ensureLogin()); document.getElementById('btnMsLogout')?.addEventListener('click', ()=> ensureLogout()); document.getElementById('btnRefreshDay')?.addEventListener('click', ()=> renderDay()); document.getElementById('btnBackupNow')?.addEventListener('click', async ()=>{ const b = await createBackupIfExists(); if(b) Swal.fire('Backup criado', b, 'success'); }); document.querySelectorAll('.navbtn').forEach(b=> b.addEventListener('click', ()=>{ document.querySelectorAll('.navbtn').forEach(x=>x.classList.remove('active')); b.classList.add('active'); const s=b.getAttribute('data-section'); document.querySelectorAll('.section').forEach(sec=>sec.classList.remove('active')); document.getElementById(s).classList.add('active'); if(s==='admin') showAdminTab('professores'); })); document.querySelectorAll('.tab').forEach(t=> t.addEventListener('click', ()=>{ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); showAdminTab(t.getAttribute('data-tab')); })); const theme = localStorage.getItem('esp_theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); if(theme==='dark') document.documentElement.setAttribute('data-theme','dark'); await initMsal(); const c = localStorage.getItem('esp_config'); if(c) state.config = JSON.parse(c); const r = localStorage.getItem('esp_reg'); if(r) state.reg = JSON.parse(r); if(!state.config) state.config={professores:[],alunos:[],disciplinas:[],grupos:[],calendario:{}}; if(!state.reg) state.reg={versao:'v1',registos:[]}; renderDay(); renderRegList(); });
+    updateSync('🔁 a restaurar...');
+    const content = await graphLoad(`${BACKUP_FOLDER}/${pick}`);
+    if (!content) { Swal.fire('Erro','Falha a ler o backup.','error'); updateSync('⚠ offline'); return; }
+
+    await graphSave(CFG_PATH, content);
+    state.config = content;
+    localStorage.setItem('esp_config', JSON.stringify(state.config));
+    toast('Configuração restaurada');
+    renderDay(); showAdminTab('professores');
+    updateSync('💾 guardado');
+  } catch (e) {
+    console.warn(e);
+    Swal.fire('Aviso','Não foi possível restaurar. Verifica permissões/rede.','warning');
+    updateSync('⚠ offline');
+  }
+}
+
+/* ===== Navegação e bootstrap ===== */
+window.openAdminModal = function() {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.getElementById('admin').classList.add('active');
+  document.querySelectorAll('.navbtn').forEach(n => n.classList.remove('active'));
+  document.querySelector('[data-section="admin"]').classList.add('active');
+  showAdminTab('professores');
+};
+
+document.addEventListener('DOMContentLoaded', async () => {
+  $('#btnMsLogin')?.addEventListener('click', () => ensureLogin());
+  $('#btnMsLogout')?.addEventListener('click', () => ensureLogout());
+  $('#btnRefreshDay')?.addEventListener('click', () => renderDay());
+  $('#btnBackupNow')?.addEventListener('click', async () => {
+    const b = await createBackupIfExists();
+    if (b) Swal.fire('Backup criado', b, 'success');
+  });
+
+  // v4.4.1: novos botões
+  $('#btnExportCfgJson')?.addEventListener('click', () => exportJson('config_especial.json', state.config || {}));
+  $('#btnExportRegJson')?.addEventListener('click', () => exportJson('2registos_alunos.json', state.reg || {versao:'v1', registos:[]}));
+  $('#btnExportCfgXlsx')?.addEventListener('click', () => exportConfigXlsx());
+  $('#btnExportRegXlsx')?.addEventListener('click', () => exportRegXlsx());
+  $('#btnRestoreBackup')?.addEventListener('click', () => restoreBackup());
+
+  document.querySelectorAll('.navbtn').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.navbtn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    const s = b.getAttribute('data-section');
+    document.querySelectorAll('.section').forEach(sec => sec.classList.remove('active'));
+    document.getElementById(s).classList.add('active');
+    if (s === 'admin') showAdminTab('professores');
+  }));
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    showAdminTab(t.getAttribute('data-tab'));
+  }));
+
+  const theme = localStorage.getItem('esp_theme') ||
+    (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  if (theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+
+  await initMsal();
+  const c = localStorage.getItem('esp_config'); if (c) state.config = JSON.parse(c);
+  const r = localStorage.getItem('esp_reg'); if (r) state.reg = JSON.parse(r);
+  if (!state.config) state.config = { professores:[], alunos:[], disciplinas:[], grupos:[], calendario:{} };
+  if (!state.reg) state.reg = { versao:'v1', registos:[] };
+  renderDay(); renderRegList();
+  setSessionName();
+});

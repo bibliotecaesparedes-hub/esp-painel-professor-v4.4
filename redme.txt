@@ -1,0 +1,35 @@
+# ESP.EE · Painel Professor v4.4.1
+
+SPA em HTML/CSS/JS (sem build), com autenticação **MSAL** e integração **Microsoft Graph** para ler/gravar:
+- `/Documents/GestaoAlunos-OneDrive/config_especial.json`
+- `/Documents/GestaoAlunos-OneDrive/2registos_alunos.json`
+- `/Documents/GestaoAlunos-OneDrive/backup/…`
+
+## Publicação (GitHub Pages)
+1) Em **Settings ▸ Pages**  
+   **Source:** `Deploy from a branch` → **Branch:** `main` → **/ (root)`  
+2) `index.html` já inclui `/esp-painel-professor-v4.4/`.
+
+## App Registration (Microsoft Entra ID)
+- **Tipo**: SPA (single-page app)
+- **Redirect URI**: `https://bibliotecaesparedes-hub.github.io/esp-painel-professor-v4.4/`
+- **Permissões (Delegated)**:
+  - `Microsoft Graph → Files.ReadWrite.All` (precisa de “Grant admin consent”)
+  - `Microsoft Graph → User.Read`
+  - (MSAL adiciona `openid profile offline_access` por omissão)
+
+## Endpoints Graph usados
+- Ler JSON: `GET /sites/{siteId}/drive/root:{path}:/content`
+- Gravar JSON (≤ 250MB): `PUT /sites/{siteId}/drive/root:{path}:/content`
+- Listar backups: `GET /sites/{siteId}/drive/root:{folderPath}:/children`
+
+## Estrutura de dados (resumo)
+`config_especial.json`
+```json
+{
+  "professores":[{"id":"p001","nome":"Ana","email":"ana@…"}],
+  "alunos":[{"id":"a001","nome":"João"}],
+  "disciplinas":[{"id":"mat","nome":"Matemática"}],
+  "grupos":[{"id":"g1","professorId":"p001","disciplinaId":"mat","sala":"B201","horaInicio":"08:15","horaFim":"09:05"}],
+  "calendario":{}
+}
