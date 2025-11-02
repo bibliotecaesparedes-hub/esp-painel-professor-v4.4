@@ -4,7 +4,7 @@ const CFG_PATH = '/Documents/GestaoAlunos-OneDrive/config_especial.json';
 const REG_PATH = '/Documents/GestaoAlunos-OneDrive/2registos_alunos.json';
 const BACKUP_FOLDER = '/Documents/GestaoAlunos-OneDrive/backup';
 
-const MSAL_CONFIG = { auth: { clientId: 'd650692c-6e73-48b3-af84-e3497ff3e1f1', authority: 'https://login.microsoftonline.com/d650692c-6e73-48b3-af84-e3497ff3e1f1', redirectUri: location.origin + location.pathname }, cache: { cacheLocation: 'localStorage' } };
+const MSAL_CONFIG = { auth: { clientId: 'd650692c-6e73-48b3-af84-e3497ff3e1f1', authority: 'https://login.microsoftonline.com/d650692c-6e73-48b3-af84-e3497ff3e1f1', redirectUri: https://bibliotecaesparedes-hub.github.io/esp-painel-professor-v4.4/ }, cache: { cacheLocation: 'localStorage' } };
 const MSAL_SCOPES = { scopes: ['Files.ReadWrite.All','User.Read','openid','profile','offline_access'] };
 
 let msalApp, account, accessToken; const state = { config:null, reg:{versao:'v1',registos:[]} };
