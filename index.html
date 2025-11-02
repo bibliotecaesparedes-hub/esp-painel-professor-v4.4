@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ESP.EE · Painel Professor v4.4</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.286.0/dist/umd/lucide.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">ESP.EE</div>
+    <nav>
+      <button class="navbtn active" data-section="painel">📅 Painel do Dia</button>
+      <button class="navbtn" data-section="registos">📘 Registos</button>
+      <button id="btnOpenAdminSidebar" class="navbtn" data-section="admin">👥 Administração</button>
+      <button class="navbtn" data-section="config">⚙️ Configurações</button>
+    </nav>
+    <div class="sidebar-foot">v4.4 — Final</div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="left">
+        <strong id="title">ESP.EE · Painel</strong>
+      </div>
+      <div class="right">
+        <div class="status-box"><span id="sessNome">Sessão: não iniciada</span><span id="syncIndicator">—</span></div>
+        <button id="themeToggle" class="btn ghost">Tema</button>
+        <button id="btnMsLogin" class="btn">Entrar</button>
+        <button id="btnMsLogout" class="btn ghost" style="display:none">Sair</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section id="painel" class="section active">
+        <div class="card">
+          <h3>📅 Painel do Dia</h3>
+          <div class="small">Registos rápidos para professores</div>
+          <div class="controls"><input id="dataHoje" type="date"><button id="btnRefreshDay" class="btn ghost">Recarregar</button></div>
+          <div id="sessoesHoje"></div>
+        </div>
+      </section>
+
+      <section id="registos" class="section">
+        <div class="card"><h3>Registos</h3><div id="regList" class="list small"></div></div>
+      </section>
+
+      <section id="admin" class="section">
+        <div class="card">
+          <h3>Administração</h3>
+          <div class="tabbar" id="adminTabs">
+            <button class="tab active" data-tab="professores">👥 Professores</button>
+            <button class="tab" data-tab="alunos">🎓 Alunos</button>
+            <button class="tab" data-tab="disciplinas">📘 Disciplinas</button>
+            <button class="tab" data-tab="grupos">🕐 Horários</button>
+            <button class="tab" data-tab="calendario">📅 Calendário</button>
+          </div>
+          <div id="adminContent" class="adminContent small"></div>
+          <div class="adminActions">
+            <label class="btn ghost fileinput">Importar <input id="fileImport" type="file" accept=".xlsx,.xls,.json" style="display:none"></label>
+            <button id="btnExportConfig" class="btn ghost">Exportar JSON</button>
+            <button id="btnExportXlsx" class="btn ghost">Exportar XLSX</button>
+            <button id="btnBackupNow" class="btn">Backup agora</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="config" class="section">
+        <div class="card"><h3>Configurações</h3><div class="small">Preferências e backups</div></div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
